@@ -46,20 +46,32 @@ module Jolie
       # Reduces a URL, bare domain, or email address to a bare lowercase host:
       #   "User@Sub.Example.COM"          -> "sub.example.com"
       #   "HTTPS://example.com:8080/a?b"  -> "example.com"
+      #   "a/b@mailinator.com"            -> "mailinator.com"
       #   "example.com."                  -> "example.com"
       # Returns "" when nothing host-like can be extracted. IP literals pass
       # through unchanged (the lists hold domains, so they simply never match).
       #
-      # The authority is isolated BEFORE any @ handling: an @ in the path,
-      # query, or fragment ("/redirect?to=user@mailinator.com") is never
-      # mistaken for userinfo, and only the LAST @ within the authority is the
-      # userinfo delimiter (per RFC 3986), so "example.com@evil.example" still
-      # resolves to "evil.example".
+      # A schemeless input containing @ is treated as an email address FIRST:
+      # the local part may legally contain / ? # (RFC 5322 atext), so applying
+      # URL delimiters to it would sever the domain ("a/b@mailinator.com" would
+      # otherwise read as host "a"). The host is everything after the LAST @.
+      #
+      # With a scheme:// present it's a URL: the authority is isolated BEFORE
+      # any @ handling, so an @ in the path/query/fragment
+      # ("/redirect?to=user@mailinator.com") is never mistaken for userinfo,
+      # and only the LAST @ within the authority is the userinfo delimiter (per
+      # RFC 3986), so "example.com@evil.example" still resolves to
+      # "evil.example".
       def extract_host(input)
         candidate = input.to_s.strip.downcase
+
+        if !candidate.match?(%r{\A[a-z][a-z0-9+.-]*://}) && candidate.include?("@")
+          return candidate.split("@").last.to_s.sub(/:\d*\z/, "").sub(/\.\z/, "")
+        end
+
         candidate = candidate.sub(%r{\A[a-z][a-z0-9+.-]*://}, "") # scheme
         candidate = candidate.split(%r{[/\\?#]}).first.to_s # authority: cut path/query/fragment
-        candidate = candidate.split("@").last.to_s # email address / URL userinfo
+        candidate = candidate.split("@").last.to_s # URL userinfo
         candidate = candidate.sub(/:\d*\z/, "") # port
         candidate.sub(/\.\z/, "") # trailing root dot
       end

@@ -23,6 +23,12 @@ RSpec.describe Jolie::Moderation::UrlBlocklist do
       expect(blocklist.extract_host("Someone@Example.COM")).to eq("example.com")
     end
 
+    it "recognizes emails whose local part contains URL delimiter characters" do
+      # / ? # are valid in an RFC 5322 local part; they must not sever the domain.
+      expect(blocklist.extract_host("a/b@mailinator.com")).to eq("mailinator.com")
+      expect(blocklist.extract_host("a?b#c@mailinator.com")).to eq("mailinator.com")
+    end
+
     it "prefers the host over URL userinfo" do
       expect(blocklist.extract_host("https://example.com@evil.example/")).to eq("evil.example")
     end
@@ -66,6 +72,15 @@ RSpec.describe Jolie::Moderation::UrlBlocklist do
       expect(blocklist).to be_blocked("https://mailinator.com/path?next=user@example.com")
       # …and a blocklisted domain buried in the query must not condemn a clean host.
       expect(blocklist).not_to be_blocked("https://example.com/redirect?to=user@mailinator.com")
+    end
+
+    it "cannot be bypassed with URL delimiter characters in an email local part" do
+      expect(blocklist).to be_blocked("a/b@mailinator.com")
+      expect(blocklist).to be_blocked("a?b#c@0-mail.com")
+      # Fail-closed on purpose: a schemeless string with an @ is read as an
+      # email, so a blocklisted domain after the @ decides even inside a
+      # would-be URL (the scheme-bearing form above stays clean).
+      expect(blocklist).to be_blocked("example.com/redirect?to=user@mailinator.com")
     end
   end
 
