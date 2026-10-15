@@ -37,6 +37,11 @@ RSpec.describe Jolie::Moderation::UrlBlocklist do
       expect(blocklist.extract_host(nil)).to eq("")
       expect(blocklist.extract_host("   ")).to eq("")
     end
+
+    it "collapses embedded whitespace the way URL validators and crawlers do" do
+      expect(blocklist.extract_host("https://mai linator.com")).to eq("mailinator.com")
+      expect(blocklist.extract_host("  example.com  ")).to eq("example.com")
+    end
   end
 
   describe ".blocked? / .match" do
@@ -81,6 +86,22 @@ RSpec.describe Jolie::Moderation::UrlBlocklist do
       # email, so a blocklisted domain after the @ decides even inside a
       # would-be URL (the scheme-bearing form above stays clean).
       expect(blocklist).to be_blocked("example.com/redirect?to=user@mailinator.com")
+    end
+
+    it "matches the host a crawler would resolve, not just the raw string" do
+      # Whitespace is stripped by the validator/crawler before resolving…
+      expect(blocklist).to be_blocked("https://mai linator.com")
+      # …and a schemeless URL carrying an @ resolves to its authority host.
+      expect(blocklist).to be_blocked("mailinator.com/path@allowed.example")
+      expect(blocklist.matched_host("mailinator.com/path@allowed.example")).to eq("mailinator.com")
+    end
+  end
+
+  describe ".matched_host" do
+    it "returns the candidate host that matched, not just the list entry" do
+      expect(blocklist.matched_host("deep.sub.0-mail.com")).to eq("deep.sub.0-mail.com")
+      expect(blocklist.matched_host("a/b@mailinator.com")).to eq("mailinator.com")
+      expect(blocklist.matched_host("example.com")).to be_nil
     end
   end
 

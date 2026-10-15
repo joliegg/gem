@@ -43,37 +43,48 @@ module Jolie
         find_in(shorteners, input)
       end
 
-      # Reduces a URL, bare domain, or email address to a bare lowercase host:
+      # Reduces a URL, bare domain, or email address to its primary host:
       #   "User@Sub.Example.COM"          -> "sub.example.com"
       #   "HTTPS://example.com:8080/a?b"  -> "example.com"
       #   "a/b@mailinator.com"            -> "mailinator.com"
       #   "example.com."                  -> "example.com"
-      # Returns "" when nothing host-like can be extracted. IP literals pass
-      # through unchanged (the lists hold domains, so they simply never match).
-      #
-      # A schemeless input containing @ is treated as an email address FIRST:
-      # the local part may legally contain / ? # (RFC 5322 atext), so applying
-      # URL delimiters to it would sever the domain ("a/b@mailinator.com" would
-      # otherwise read as host "a"). The host is everything after the LAST @.
-      #
-      # With a scheme:// present it's a URL: the authority is isolated BEFORE
-      # any @ handling, so an @ in the path/query/fragment
-      # ("/redirect?to=user@mailinator.com") is never mistaken for userinfo,
-      # and only the LAST @ within the authority is the userinfo delimiter (per
-      # RFC 3986), so "example.com@evil.example" still resolves to
-      # "evil.example".
+      # Returns "" when nothing host-like can be extracted. This is the FIRST
+      # candidate host; matching uses candidate_hosts, which can hold both
+      # readings of an ambiguous input.
       def extract_host(input)
-        candidate = input.to_s.strip.downcase
+        candidate_hosts(input).first.to_s
+      end
 
-        if !candidate.match?(%r{\A[a-z][a-z0-9+.-]*://}) && candidate.include?("@")
-          return candidate.split("@").last.to_s.sub(/:\d*\z/, "").sub(/\.\z/, "")
-        end
+      # Every host an input may resolve to, deduplicated, most likely reading
+      # first. Whitespace is stripped EVERYWHERE (not just the ends), matching
+      # the normalization URL validators and crawlers apply before resolving —
+      # "https://mai linator.com" resolves to mailinator.com for them, so it
+      # must match here too.
+      #
+      # - With a scheme:// the URL authority only: an @ later in the URL is
+      #   path/query content, not userinfo, and only the LAST @ within the
+      #   authority is the userinfo delimiter (RFC 3986), so
+      #   "example.com@evil.example" resolves to "evil.example".
+      # - Schemeless with an @ is ambiguous: an email whose local part may
+      #   legally contain / ? # (RFC 5322 atext — "a/b@mailinator.com"), or a
+      #   bare URL carrying an @ ("mailinator.com/path@allowed.example", whose
+      #   crawled host is mailinator.com). Both readings are returned so
+      #   neither interpretation slips a listed host past the guard.
+      # - Otherwise the bare host itself.
+      def candidate_hosts(input)
+        candidate = input.to_s.downcase.gsub(/\s+/, "")
+        return [] if candidate.empty?
 
-        candidate = candidate.sub(%r{\A[a-z][a-z0-9+.-]*://}, "") # scheme
-        candidate = candidate.split(%r{[/\\?#]}).first.to_s # authority: cut path/query/fragment
-        candidate = candidate.split("@").last.to_s # URL userinfo
-        candidate = candidate.sub(/:\d*\z/, "") # port
-        candidate.sub(/\.\z/, "") # trailing root dot
+        hosts =
+          if candidate.match?(%r{\A[a-z][a-z0-9+.-]*://})
+            [authority_host(candidate)]
+          elsif candidate.include?("@")
+            [candidate.split("@").last.to_s, authority_host(candidate)]
+          else
+            [authority_host(candidate)]
+          end
+
+        hosts.map { |host| normalize_host(host) }.reject(&:empty?).uniq
       end
 
       def blocklist
@@ -98,16 +109,38 @@ module Jolie
         @shorteners = nil
       end
 
-      def find_in(set, input)
-        host = extract_host(input)
-        return nil if host.empty?
+      # The candidate host that produced a blocklist match, or nil — e.g.
+      # "sub.mailinator.com" for a match on entry "mailinator.com".
+      def matched_host(input)
+        match_in(blocklist, input)&.last
+      end
 
-        parts = host.split(".")
-        (parts.length - 1).downto(0) do |index|
-          suffix = parts[index..].join(".")
-          return suffix if set.include?(suffix)
+      def find_in(set, input)
+        match_in(set, input)&.first
+      end
+
+      def match_in(set, input)
+        candidate_hosts(input).each do |host|
+          parts = host.split(".")
+          (parts.length - 1).downto(0) do |index|
+            suffix = parts[index..].join(".")
+            return [suffix, host] if set.include?(suffix)
+          end
         end
         nil
+      end
+
+      # The host out of a URL authority: strips any scheme, cuts path/query/
+      # fragment, and keeps only what follows the LAST @ (userinfo delimiter).
+      def authority_host(candidate)
+        candidate
+          .sub(%r{\A[a-z][a-z0-9+.-]*://}, "")
+          .split(%r{[/\\?#]}).first.to_s
+          .split("@").last.to_s
+      end
+
+      def normalize_host(host)
+        host.sub(/:\d*\z/, "").sub(/\.\z/, "")
       end
 
       def load_set(path)
